@@ -1,8 +1,25 @@
 import os
+import threading
+from flask import Flask
 from google import genai
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
+# --- Prosty serwer HTTP dla darmowego darmowego planu Render Web Service ---
+app_web = Flask(__name__)
+
+
+@app_web.route("/")
+def home():
+  return "Bot dziala 24/7!"
+
+
+def run_flask():
+  port = int(os.environ.get("PORT", 10000))
+  app_web.run(host="0.0.0.0", port=port)
+
+
+# --- Kod Bota Telegram ---
 TOKEN_TELEGRAMA = os.getenv("TELEGRAM_TOKEN")
 KLUCZ_1 = os.getenv("GEMINI_KEY_1")
 KLUCZ_2 = os.getenv("GEMINI_KEY_2")
@@ -10,28 +27,36 @@ KLUCZ_2 = os.getenv("GEMINI_KEY_2")
 klient_1 = genai.Client(api_key=KLUCZ_1)
 klient_2 = genai.Client(api_key=KLUCZ_2)
 
+
 async def obsluz_wiadomosc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pytanie = update.message.text
-    chat_id = update.effective_chat.id
+  pytanie = update.message.text
+  chat_id = update.effective_chat.id
 
-    await context.bot.send_message(
-        chat_id=chat_id, 
-        text="🔄 Otrzymałem zadanie! Uruchamiam pętlę weryfikacyjną między dwoma modelami Gemini..."
-    )
+  await context.bot.send_message(
+      chat_id=chat_id,
+      text=(
+          "🔄 Otrzymałem zadanie! Uruchamiam pętlę weryfikacyjną między dwoma"
+          " modelami Gemini..."
+      ),
+  )
 
-    prompt_g = f"Odpowiedz na to zadanie najlepiej jak potrafisz:\n{pytanie}"
-    historia_uwag = ""
-    ostateczny_wynik = ""
+  prompt_g = f"Odpowiedz na to zadanie najlepiej jak potrafisz:\n{pytanie}"
+  historia_uwag = ""
+  ostateczny_wynik = ""
 
-    for i in range(1, 4):
-        try:
-            res_1 = klient_1.models.generate_content(model="gemini-2.5-flash", contents=prompt_g)
-            tekst_g = res_1.text
-        except Exception as e:
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ Błąd konta 1: {e}")
-            return
+  for i in range(1, 4):
+    try:
+      res_1 = klient_1.models.generate_content(
+          model="gemini-2.5-flash", contents=prompt_g
+      )
+      tekst_g = res_1.text
+    except Exception as e:
+      await context.bot.send_message(
+          chat_id=chat_id, text=f"❌ Błąd konta 1: {e}"
+      )
+      return
 
-        prompt_c = f"""
+    prompt_c = f"""
 Jesteś surowym weryfikatorem. Oceń poniższy tekst/kod.
 Zadanie: {pytanie}
 Tekst do sprawdzenia:
@@ -41,25 +66,40 @@ INSTRUKCJA:
 - Jeśli jest idealnie, napisz dokładnie na samym początku: [OK] i podaj ostateczną wersję.
 - Jeśli wymaga poprawy, napisz na początku: [POPRAWKA] i wypisz krótkie uwagi dla drugiego modelu.
 """
-        try:
-            res_2 = klient_2.models.generate_content(model="gemini-2.5-flash", contents=prompt_c)
-            ocena_c = res_2.text.strip()
-        except Exception as e:
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ Błąd konta 2: {e}")
-            return
+    try:
+      res_2 = klient_2.models.generate_content(
+          model="gemini-2.5-flash", contents=prompt_c
+      )
+      ocena_c = res_2.text.strip()
+    except Exception as e:
+      await context.bot.send_message(
+          chat_id=chat_id, text=f"❌ Błąd konta 2: {e}"
+      )
+      return
 
-        if ocena_c.startswith("[OK]"):
-            ostateczny_wynik = ocena_c.replace("[OK]", "").strip()
-            break
-        else:
-            historia_uwag = ocena_c
-            ostateczny_wynik = tekst_g
+    if ocena_c.startswith("[OK]"):
+      ostateczny_wynik = ocena_c.replace("[OK]", "").strip()
+      break
+    else:
+      historia_uwag = ocena_c
+      ostateczny_wynik = tekst_g
 
-    odpowiedz_koncowa = f"✅ **Zatwierdzony wynik przez pętlę AI:**\n\n{ostateczny_wynik}"
-    await context.bot.send_message(chat_id=chat_id, text=odpowiedz_koncowa, parse_mode="Markdown")
+  odpowiedz_koncowa = (
+      f"✅ **Zatwierdzony wynik przez pętlę AI:**\n\n{ostateczny_wynik}"
+  )
+  await context.bot.send_message(
+      chat_id=chat_id, text=odpowiedz_koncowa, parse_mode="Markdown"
+  )
+
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN_TELEGRAMA).build()
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), obsluz_wiadomosc))
-    print("Bot uruchomiony i nasłuchuje...")
-    app.run_polling()
+  # Uruchomienie serwera www w tle
+  threading.Thread(target=run_flask, daemon=True).start()
+
+  # Uruchomienie bota Telegram
+  app_bot = ApplicationBuilder().token(TOKEN_TELEGRAMA).build()
+  app_bot.add_handler(
+      MessageHandler(filters.TEXT & (~filters.COMMAND), obsluz_wiadomosc)
+  )
+  print("Bot uruchomiony i nasłuchuje...")
+  app_bot.run_polling()
